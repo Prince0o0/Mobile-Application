@@ -3,6 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
+import 'package:qr_flutter/qr_flutter.dart';
 
 void main() {
   runApp(const MyApp());
@@ -270,6 +271,23 @@ class _BudgetAppState extends State<BudgetApp> {
                   );
                 },
         ),
+        const SizedBox(height: 8),   
+        OutlinedButton.icon(
+          icon: const Icon(Icons.group_add), 
+          label: const Text(
+              'หารค่าใช้จ่ายกลุ่ม (PromptPay QR)'), 
+          onPressed: busy 
+              ? null 
+              : () {
+                  Navigator.push(
+                    context, 
+                    MaterialPageRoute(
+                      builder: (context) =>
+                          const GroupSplitPage(), 
+                    ),  
+                  ); 
+                }, 
+        ),
         const SizedBox(height: 16),
         const Text('วางแผนเงินในรอบนี้',
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
@@ -430,9 +448,7 @@ class _BillReminderPageState extends State<BillReminderPage> {
         iOS: DarwinInitializationSettings(),
       );
 
-      await notifications.initialize(
-        settings
-      );
+      await notifications.initialize(settings);
 
       final android = notifications.resolvePlatformSpecificImplementation<
           AndroidFlutterLocalNotificationsPlugin>();
@@ -692,5 +708,238 @@ class _BillReminderPageState extends State<BillReminderPage> {
         ),
       ),
     );
+  }
+}
+
+// 1. หน้าจอระบบหารค่าใช้จ่ายกลุ่ม
+class GroupSplitPage extends StatefulWidget {
+  const GroupSplitPage({super.key});
+
+  @override
+  State<GroupSplitPage> createState() => _GroupSplitPageState();
+}
+
+class _GroupSplitPageState extends State<GroupSplitPage> {
+  final titleController = TextEditingController();
+  final totalAmountController = TextEditingController();
+  final peopleCountController = TextEditingController();
+  final promptPayController = TextEditingController();
+
+  double perPerson = 0.0;
+  String qrData = '';
+  String errorMessage = '';
+
+  void calculateAndGenerateQR() {
+    final title = titleController.text.trim();
+    final total = double.tryParse(totalAmountController.text.trim());
+    final count = int.tryParse(peopleCountController.text.trim());
+    final promptPay = promptPayController.text.trim();
+
+    if (title.isEmpty || total == null || count == null || promptPay.isEmpty) {
+      setState(() {
+        errorMessage = 'กรุณากรอกข้อมูลให้ครบถ้วน';
+        qrData = '';
+      });
+      return;
+    }
+
+    if (total <= 0 || count <= 0) {
+      setState(() {
+        errorMessage = 'จำนวนเงินและจำนวนคนต้องมากกว่า 0';
+        qrData = '';
+      });
+      return;
+    }
+
+    if (!RegExp(r'^\d{10}$').hasMatch(promptPay) &&
+        !RegExp(r'^\d{13}$').hasMatch(promptPay)) {
+      setState(() {
+        errorMessage = 'กรอกเบอร์ PromptPay เป็นตัวเลข 10 หรือ 13 หลัก';
+        qrData = '';
+      });
+      return;
+    }
+
+    final calculated = total / count;
+    // เรียกใช้ Helper สร้าง EMVCo Payload
+    final payload = PromptPayHelper.generatePayload(promptPay, calculated);
+
+    setState(() {
+      perPerson = calculated;
+      qrData = payload;
+      errorMessage = '';
+    });
+  }
+
+  @override
+  void dispose() {
+    titleController.dispose();
+    totalAmountController.dispose();
+    peopleCountController.dispose();
+    promptPayController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('หารค่าใช้จ่ายกลุ่ม'),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'หารค่าอาหาร / ค่าทริป',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: titleController,
+                decoration: const InputDecoration(
+                  labelText: 'ชื่อรายการ (เช่น ค่าชาบู, ค่าทริปบางแสน)',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: totalAmountController,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                decoration: const InputDecoration(
+                  labelText: 'ยอดเงินรวมทั้งหมด (บาท)',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: peopleCountController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'จำนวนคนหาร (รวมตัวคุณเอง)',
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: promptPayController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'เบอร์ PromptPay / เลขบัตรประชาชน ผู้รับเงิน',
+                  hintText: 'เช่น 0812345678',
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (errorMessage.isNotEmpty)
+                Text(
+                  errorMessage,
+                  style: const TextStyle(color: Colors.red),
+                ),
+              ElevatedButton.icon(
+                icon: const Icon(Icons.qr_code_2),
+                label: const Text('คำนวณและสร้าง QR Code'),
+                onPressed: calculateAndGenerateQR,
+              ),
+              const SizedBox(height: 24),
+              if (qrData.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: Column(
+                    children: [
+                      Text(
+                        'รายการ: ${titleController.text}',
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'ต้องจ่ายคนละ ${perPerson.toStringAsFixed(2)} บาท',
+                        style: const TextStyle(
+                          fontSize: 22,
+                          color: Color(0xFFAD4700),
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      QrImageView(
+                        data: qrData,
+                        version: QrVersions.auto,
+                        size: 220.0,
+                      ),
+                      const SizedBox(height: 8),
+                      const Text(
+                        'ให้เพื่อนสแกน QR Code นี้เพื่อโอนเงินได้ทันที',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+
+class PromptPayHelper {
+  static String generatePayload(String target, double amount) {
+    
+    String cleanTarget = target.replaceAll(RegExp(r'[^0-9]'), '');
+
+    
+    if (cleanTarget.length == 10 && cleanTarget.startsWith('0')) {
+      cleanTarget = '0066${cleanTarget.substring(1)}';
+    }
+
+    String targetType =
+        cleanTarget.length == 13 && cleanTarget.startsWith('0066')
+            ? '01'
+            : '02';
+    String targetLength = cleanTarget.length.toString().padLeft(2, '0');
+
+    
+    String subTag00 = '0016A000000677010111';
+    String subTagTarget = '$targetType$targetLength$cleanTarget';
+
+    String merchantInfo = '$subTag00$subTagTarget';
+    String tag29Length = merchantInfo.length.toString().padLeft(2, '0');
+    String tag29 = '29$tag29Length$merchantInfo';
+
+
+    String tag54 = '';
+    if (amount > 0) {
+      String amountStr = amount.toStringAsFixed(2);
+      String amountLength = amountStr.length.toString().padLeft(2, '0');
+      tag54 = '54$amountLength$amountStr';
+    }
+
+   
+    String rawData =
+        '000201010212' + tag29 + '5303764' + tag54 + '5802TH' + '6304';
+
+    
+    int crc = 0xFFFF;
+    for (int i = 0; i < rawData.length; i++) {
+      crc ^= rawData.codeUnitAt(i) << 8;
+      for (int j = 0; j < 8; j++) {
+        if ((crc & 0x8000) != 0) {
+          crc = ((crc << 1) ^ 0x1021) & 0xFFFF;
+        } else {
+          crc = (crc << 1) & 0xFFFF;
+        }
+      }
+    }
+
+    String crcHex = crc.toRadixString(16).toUpperCase().padLeft(4, '0');
+    return rawData + crcHex;
   }
 }
