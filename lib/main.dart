@@ -1,5 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:timezone/data/latest.dart' as tzdata;
+import 'package:timezone/timezone.dart' as tz;
 
 void main() {
   runApp(const MyApp());
@@ -252,6 +255,21 @@ class _BudgetAppState extends State<BudgetApp> {
           onPressed: busy ? null : () => setState(() => page = 2),
           child: const Text('ตั้งค่า / ข้อมูลผู้ใช้'),
         ),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.notifications_active),
+          label: const Text('ตั้งแจ้งเตือนค่าน้ำ ค่าไฟ ค่าหอพัก'),
+          onPressed: busy
+              ? null
+              : () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const BillReminderPage(),
+                    ),
+                  );
+                },
+        ),
         const SizedBox(height: 16),
         const Text('วางแผนเงินในรอบนี้',
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
@@ -372,5 +390,307 @@ class _BudgetAppState extends State<BudgetApp> {
     savingController.dispose();
     daysController.dispose();
     super.dispose();
+  }
+}
+
+class BillReminderPage extends StatefulWidget {
+  const BillReminderPage({super.key});
+
+  @override
+  State<BillReminderPage> createState() => _BillReminderPageState();
+}
+
+class _BillReminderPageState extends State<BillReminderPage> {
+  final FlutterLocalNotificationsPlugin notifications =
+      FlutterLocalNotificationsPlugin();
+
+  final TextEditingController detailController = TextEditingController();
+
+  String billType = 'ค่าน้ำประปา';
+  DateTime? dueDate;
+  int daysBefore = 1;
+  bool ready = false;
+  String message = '';
+
+  @override
+  void initState() {
+    super.initState();
+    initializeNotifications();
+  }
+
+  Future<void> initializeNotifications() async {
+    try {
+      tzdata.initializeTimeZones();
+      tz.setLocalLocation(tz.getLocation('Asia/Bangkok'));
+
+      const settings = InitializationSettings(
+        android: AndroidInitializationSettings(
+          '@mipmap/ic_launcher',
+        ),
+        iOS: DarwinInitializationSettings(),
+      );
+
+      await notifications.initialize(
+        settings
+      );
+
+      final android = notifications.resolvePlatformSpecificImplementation<
+          AndroidFlutterLocalNotificationsPlugin>();
+
+      await android?.requestNotificationsPermission();
+
+      if (mounted) {
+        setState(() {
+          ready = true;
+          message = 'พร้อมตั้งค่าการแจ้งเตือน';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          message = 'เริ่มระบบแจ้งเตือนไม่สำเร็จ: $e';
+        });
+      }
+    }
+  }
+
+  Future<void> selectDueDate() async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: dueDate ?? DateTime.now().add(const Duration(days: 2)),
+      firstDate: DateTime.now(),
+      lastDate: DateTime.now().add(
+        const Duration(days: 366),
+      ),
+      helpText: 'เลือกวันครบกำหนดชำระ',
+    );
+
+    if (selected != null && mounted) {
+      setState(() {
+        dueDate = selected;
+        message = '';
+      });
+    }
+  }
+
+  Future<void> scheduleReminder() async {
+    if (!ready) {
+      setState(() {
+        message = 'ระบบแจ้งเตือนยังไม่พร้อม';
+      });
+      return;
+    }
+
+    if (dueDate == null) {
+      setState(() {
+        message = 'กรุณาเลือกวันครบกำหนดชำระ';
+      });
+      return;
+    }
+
+    final detail = detailController.text.trim();
+
+    if (detail.isEmpty) {
+      setState(() {
+        message = 'กรุณากรอกรายละเอียดหรือจำนวนเงิน';
+      });
+      return;
+    }
+
+    final reminderDate = dueDate!.subtract(
+      Duration(days: daysBefore),
+    );
+
+    // แจ้งเตือนเวลา 09:00 น. ตามเวลาไทย
+    final reminderTime = tz.TZDateTime(
+      tz.local,
+      reminderDate.year,
+      reminderDate.month,
+      reminderDate.day,
+      9,
+    );
+
+    if (!reminderTime.isAfter(tz.TZDateTime.now(tz.local))) {
+      setState(() {
+        message = 'วันแจ้งเตือนผ่านไปแล้ว กรุณาเลือกวันครบกำหนดใหม่ '
+            'หรือปรับจำนวนวันแจ้งเตือนล่วงหน้า';
+      });
+      return;
+    }
+
+    try {
+      final id = DateTime.now().millisecondsSinceEpoch.remainder(2147483647);
+
+      await notifications.zonedSchedule(
+        id,
+        'แจ้งเตือนการชำระเงิน: $billType',
+        '$detail ถึงกำหนดชำระวันที่ '
+            '${dueDate!.day}/${dueDate!.month}/${dueDate!.year}',
+        reminderTime,
+        const NotificationDetails(
+          android: AndroidNotificationDetails(
+            'bill_reminder_channel',
+            'แจ้งเตือนวันครบกำหนดชำระ',
+            channelDescription: 'แจ้งเตือนค่าน้ำ ค่าไฟ ค่าหอพัก '
+                'และค่าบริการรายเดือน',
+            importance: Importance.max,
+            priority: Priority.high,
+          ),
+          iOS: DarwinNotificationDetails(),
+        ),
+        androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      );
+
+      if (mounted) {
+        setState(() {
+          message = 'ตั้งแจ้งเตือน $billType สำเร็จ '
+              'วันที่ ${reminderTime.day}/'
+              '${reminderTime.month}/'
+              '${reminderTime.year} เวลา 09:00 น.';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          message = 'ตั้งแจ้งเตือนไม่สำเร็จ: $e';
+        });
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    detailController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('แจ้งเตือนค่าบริการ'),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'ตั้งค่าแจ้งเตือนล่วงหน้า',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'กำหนดวันชำระค่าน้ำ ค่าไฟ ค่าหอพัก '
+                'หรือค่าบริการรายเดือน',
+              ),
+              const SizedBox(height: 24),
+              DropdownButtonFormField<String>(
+                value: billType,
+                decoration: const InputDecoration(
+                  labelText: 'ประเภทค่าใช้จ่าย',
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: 'ค่าน้ำประปา',
+                    child: Text('ค่าน้ำประปา'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'ค่าไฟฟ้า',
+                    child: Text('ค่าไฟฟ้า'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'ค่าหอพัก',
+                    child: Text('ค่าหอพัก'),
+                  ),
+                  DropdownMenuItem(
+                    value: 'ค่าบริการรายเดือน',
+                    child: Text('ค่าบริการรายเดือน'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      billType = value;
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: detailController,
+                decoration: const InputDecoration(
+                  labelText: 'รายละเอียด / จำนวนเงิน',
+                  hintText: 'เช่น 650 บาท',
+                ),
+              ),
+              const SizedBox(height: 16),
+              OutlinedButton.icon(
+                onPressed: selectDueDate,
+                icon: const Icon(Icons.calendar_month),
+                label: Text(
+                  dueDate == null
+                      ? 'เลือกวันครบกำหนดชำระ'
+                      : 'วันครบกำหนด '
+                          '${dueDate!.day}/'
+                          '${dueDate!.month}/'
+                          '${dueDate!.year}',
+                ),
+              ),
+              const SizedBox(height: 16),
+              DropdownButtonFormField<int>(
+                value: daysBefore,
+                decoration: const InputDecoration(
+                  labelText: 'แจ้งเตือนล่วงหน้า',
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: 0,
+                    child: Text('วันครบกำหนด'),
+                  ),
+                  DropdownMenuItem(
+                    value: 1,
+                    child: Text('1 วันก่อน'),
+                  ),
+                  DropdownMenuItem(
+                    value: 3,
+                    child: Text('3 วันก่อน'),
+                  ),
+                  DropdownMenuItem(
+                    value: 7,
+                    child: Text('7 วันก่อน'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      daysBefore = value;
+                    });
+                  }
+                },
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: ready ? scheduleReminder : null,
+                icon: const Icon(Icons.notifications_active),
+                label: const Text('บันทึกการแจ้งเตือน'),
+              ),
+              const SizedBox(height: 16),
+              if (message.isNotEmpty)
+                Text(
+                  message,
+                  style: const TextStyle(
+                    color: Colors.deepOrange,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
