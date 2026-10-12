@@ -4,6 +4,14 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:qr_flutter/qr_flutter.dart';
+import 'dart:io';
+import 'package:fl_chart/fl_chart.dart';
+import 'package:pdf/pdf.dart';
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
+import 'package:excel/excel.dart' as xl;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 void main() {
   runApp(const MyApp());
@@ -271,24 +279,53 @@ class _BudgetAppState extends State<BudgetApp> {
                   );
                 },
         ),
-        const SizedBox(height: 8),   
+        const SizedBox(height: 8),
         OutlinedButton.icon(
-          icon: const Icon(Icons.group_add), 
-          label: const Text(
-              'หารค่าใช้จ่ายกลุ่ม (PromptPay QR)'), 
-          onPressed: busy 
-              ? null 
+          icon: const Icon(Icons.group_add),
+          label: const Text('หารค่าใช้จ่ายกลุ่ม (PromptPay QR)'),
+          onPressed: busy
+              ? null
               : () {
                   Navigator.push(
-                    context, 
+                    context,
                     MaterialPageRoute(
-                      builder: (context) =>
-                          const GroupSplitPage(), 
-                    ),  
-                  ); 
-                }, 
+                      builder: (context) => const GroupSplitPage(),
+                    ),
+                  );
+                },
         ),
         const SizedBox(height: 16),
+        // เพิ่มปุ่มนี้ใน budgetPage() ต่อจากปุ่ม "หารค่าใช้จ่ายกลุ่ม (PromptPay QR)"
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          icon: const Icon(Icons.bar_chart),
+          label: const Text('ดูสถิติ & ส่งออกรายงาน (PDF/Excel)'),
+          onPressed: (!hasResult || busy)
+              ? null
+              : () {
+                  final income =
+                      (readMoney(incomeController.text) ?? 0) / 100.0;
+                  final expense =
+                      (readMoney(expenseController.text) ?? 0) / 100.0;
+                  final saving =
+                      (readMoney(savingController.text) ?? 0) / 100.0;
+                  final days = int.tryParse(daysController.text.trim()) ?? 1;
+
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => ExpenseStatisticsPage(
+                        income: income,
+                        expense: expense,
+                        saving: saving,
+                        remaining: remainingSatang / 100.0,
+                        daily: dailySatang / 100.0,
+                        days: days,
+                      ),
+                    ),
+                  );
+                },
+        ),
         const Text('วางแผนเงินในรอบนี้',
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
         const Text(
@@ -889,13 +926,10 @@ class _GroupSplitPageState extends State<GroupSplitPage> {
   }
 }
 
-
 class PromptPayHelper {
   static String generatePayload(String target, double amount) {
-    
     String cleanTarget = target.replaceAll(RegExp(r'[^0-9]'), '');
 
-    
     if (cleanTarget.length == 10 && cleanTarget.startsWith('0')) {
       cleanTarget = '0066${cleanTarget.substring(1)}';
     }
@@ -906,14 +940,12 @@ class PromptPayHelper {
             : '02';
     String targetLength = cleanTarget.length.toString().padLeft(2, '0');
 
-    
     String subTag00 = '0016A000000677010111';
     String subTagTarget = '$targetType$targetLength$cleanTarget';
 
     String merchantInfo = '$subTag00$subTagTarget';
     String tag29Length = merchantInfo.length.toString().padLeft(2, '0');
     String tag29 = '29$tag29Length$merchantInfo';
-
 
     String tag54 = '';
     if (amount > 0) {
@@ -922,11 +954,9 @@ class PromptPayHelper {
       tag54 = '54$amountLength$amountStr';
     }
 
-   
     String rawData =
         '000201010212' + tag29 + '5303764' + tag54 + '5802TH' + '6304';
 
-    
     int crc = 0xFFFF;
     for (int i = 0; i < rawData.length; i++) {
       crc ^= rawData.codeUnitAt(i) << 8;
@@ -941,5 +971,318 @@ class PromptPayHelper {
 
     String crcHex = crc.toRadixString(16).toUpperCase().padLeft(4, '0');
     return rawData + crcHex;
+  }
+}
+// part4
+
+class ReportExportService {
+  // ฟังก์ชันส่งออกเป็น PDF
+  // ฟังก์ชันส่งออกเป็น PDF (ฉบับแก้ไขรองรับภาษาไทย)
+  static Future<void> exportToPdf({
+    required double income,
+    required double expense,
+    required double saving,
+    required double remaining,
+    required double daily,
+    required int days,
+  }) async {
+    final pdf = pw.Document();
+
+    //  โหลดฟอนต์ภาษาไทย (Sarabun) จาก Google Fonts
+    final thaiFont = await PdfGoogleFonts.sarabunRegular();
+    final thaiFontBold = await PdfGoogleFonts.sarabunBold();
+
+    pdf.addPage(
+      pw.Page(
+        pageFormat: PdfPageFormat.a4,
+        //  กำหนด Theme ของเอกสารให้ใช้ฟอนต์ภาษาไทย
+        theme: pw.ThemeData.withFont(
+          base: thaiFont,
+          bold: thaiFontBold,
+        ),
+        build: (pw.Context context) {
+          return pw.Padding(
+            padding: const pw.EdgeInsets.all(24),
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Text(
+                  'รายงานสรุปงบประมาณ - แอปพอดี',
+                  style: pw.TextStyle(
+                    fontSize: 22,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 8),
+                pw.Text(
+                    'วันที่ออกรายงาน: ${DateTime.now().toString().split(' ')[0]}'),
+                pw.Divider(),
+                pw.SizedBox(height: 16),
+                pw.TableHelper.fromTextArray(
+                  headers: ['รายการ', 'จำนวนเงิน (บาท)'],
+                  data: [
+                    ['รายรับทั้งหมด', income.toStringAsFixed(2)],
+                    ['รายจ่ายประจำรวม', expense.toStringAsFixed(2)],
+                    ['เงินออม', saving.toStringAsFixed(2)],
+                    ['เงินคงเหลือใช้จ่าย', remaining.toStringAsFixed(2)],
+                    ['จำนวนวันที่ใช้เงิน', '$days วัน'],
+                    ['งบเฉลี่ยต่อวัน', '${daily.toStringAsFixed(2)} บาท/วัน'],
+                  ],
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+
+    // เปิดหน้า Preview และสั่งพิมพ์/บันทึก PDF
+    await Printing.layoutPdf(
+      onLayout: (PdfPageFormat format) async => pdf.save(),
+      name: 'Budget_Report_${DateTime.now().millisecondsSinceEpoch}.pdf',
+    );
+  }
+
+  // ฟังก์ชันส่งออกเป็น Excel (.xlsx)
+  static Future<void> exportToExcel({
+    required double income,
+    required double expense,
+    required double saving,
+    required double remaining,
+    required double daily,
+    required int days,
+  }) async {
+    var excel = xl.Excel.createExcel();
+    xl.Sheet sheetObject = excel['สรุปงบประมาณ'];
+    excel.setDefaultSheet('สรุปงบประมาณ');
+
+    // เขียนข้อมูลลงเซลล์
+    sheetObject.appendRow(
+        [xl.TextCellValue('รายการ'), xl.TextCellValue('จำนวนเงิน (บาท)')]);
+    sheetObject.appendRow(
+        [xl.TextCellValue('รายรับทั้งหมด'), xl.DoubleCellValue(income)]);
+    sheetObject.appendRow(
+        [xl.TextCellValue('รายจ่ายประจำรวม'), xl.DoubleCellValue(expense)]);
+    sheetObject
+        .appendRow([xl.TextCellValue('เงินออม'), xl.DoubleCellValue(saving)]);
+    sheetObject.appendRow([
+      xl.TextCellValue('เงินคงเหลือใช้จ่าย'),
+      xl.DoubleCellValue(remaining)
+    ]);
+    sheetObject
+        .appendRow([xl.TextCellValue('จำนวนวัน'), xl.IntCellValue(days)]);
+    sheetObject.appendRow(
+        [xl.TextCellValue('งบเฉลี่ยต่อวัน'), xl.DoubleCellValue(daily)]);
+
+    // บันทึกไฟล์ลงแคชของเครื่องแล้วแชร์ผ่าน share_plus
+    final fileBytes = excel.save();
+    if (fileBytes != null) {
+      final directory = await getTemporaryDirectory();
+      final filePath =
+          '${directory.path}/Budget_Report_${DateTime.now().millisecondsSinceEpoch}.xlsx';
+      final file = File(filePath);
+      await file.writeAsBytes(fileBytes);
+
+      await Share.shareXFiles([XFile(filePath)],
+          text: 'รายงานสรุปงบประมาณ (Excel)');
+    }
+  }
+}
+
+// หน้าจอ Interactive Charts & Export Report
+
+class ExpenseStatisticsPage extends StatefulWidget {
+  final double income;
+  final double expense;
+  final double saving;
+  final double remaining;
+  final double daily;
+  final int days;
+
+  const ExpenseStatisticsPage({
+    super.key,
+    required this.income,
+    required this.expense,
+    required this.saving,
+    required this.remaining,
+    required this.daily,
+    required this.days,
+  });
+
+  @override
+  State<ExpenseStatisticsPage> createState() => _ExpenseStatisticsPageState();
+}
+
+class _ExpenseStatisticsPageState extends State<ExpenseStatisticsPage> {
+  int touchedIndex = -1;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('สรุปสถิติ & รายงาน'),
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text(
+                'สัดส่วนงบประมาณ',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              const Text('แตะที่กราฟเพื่อดูสัดส่วนเปอร์เซ็นต์แบบ Interactive'),
+              const SizedBox(height: 24),
+
+              // --- Interactive Pie Chart ---
+              SizedBox(
+                height: 240,
+                child: PieChart(
+                  PieChartData(
+                    pieTouchData: PieTouchData(
+                      touchCallback: (FlTouchEvent event, pieTouchResponse) {
+                        setState(() {
+                          if (!event.isInterestedForInteractions ||
+                              pieTouchResponse == null ||
+                              pieTouchResponse.touchedSection == null) {
+                            touchedIndex = -1;
+                            return;
+                          }
+                          touchedIndex = pieTouchResponse
+                              .touchedSection!.touchedSectionIndex;
+                        });
+                      },
+                    ),
+                    sectionsSpace: 4,
+                    centerSpaceRadius: 40,
+                    sections: _generateChartSections(),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+
+              // --- คำอธิบายสัญลักษณ์สี ---
+              _buildLegend(Colors.blue, 'รายจ่ายประจำ', widget.expense),
+              _buildLegend(Colors.green, 'เงินออม', widget.saving),
+              _buildLegend(
+                  Colors.orange, 'เงินคงเหลือใช้จ่าย', widget.remaining),
+              const SizedBox(height: 32),
+
+              const Text(
+                'ส่งออกรายงาน',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 12),
+
+              // --- ปุ่มส่งออก PDF ---
+              ElevatedButton.icon(
+                style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFAD4700)),
+                icon: const Icon(Icons.picture_as_pdf, color: Colors.white),
+                label: const Text('ส่งออกรายงานเป็น PDF',
+                    style: TextStyle(color: Colors.white)),
+                onPressed: () {
+                  ReportExportService.exportToPdf(
+                    income: widget.income,
+                    expense: widget.expense,
+                    saving: widget.saving,
+                    remaining: widget.remaining,
+                    daily: widget.daily,
+                    days: widget.days,
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
+
+              // --- ปุ่มส่งออก Excel ---
+              OutlinedButton.icon(
+                icon: const Icon(Icons.table_chart, color: Colors.green),
+                label: const Text('ส่งออกรายงานเป็น Excel (.xlsx)'),
+                onPressed: () {
+                  ReportExportService.exportToExcel(
+                    income: widget.income,
+                    expense: widget.expense,
+                    saving: widget.saving,
+                    remaining: widget.remaining,
+                    daily: widget.daily,
+                    days: widget.days,
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // ฟังก์ชันสร้างข้อมูลแต่ละ Section ของ PieChart
+  List<PieChartSectionData> _generateChartSections() {
+    final total = widget.income <= 0 ? 1.0 : widget.income;
+
+    return List.generate(3, (i) {
+      final isTouched = i == touchedIndex;
+      final fontSize = isTouched ? 18.0 : 14.0;
+      final radius = isTouched ? 65.0 : 55.0;
+
+      switch (i) {
+        case 0:
+          final pct = (widget.expense / total) * 100;
+          return PieChartSectionData(
+            color: Colors.blue,
+            value: widget.expense,
+            title: '${pct.toStringAsFixed(1)}%',
+            radius: radius,
+            titleStyle: TextStyle(
+                fontSize: fontSize,
+                fontWeight: FontWeight.bold,
+                color: Colors.white),
+          );
+        case 1:
+          final pct = (widget.saving / total) * 100;
+          return PieChartSectionData(
+            color: Colors.green,
+            value: widget.saving,
+            title: '${pct.toStringAsFixed(1)}%',
+            radius: radius,
+            titleStyle: TextStyle(
+                fontSize: fontSize,
+                fontWeight: FontWeight.bold,
+                color: Colors.white),
+          );
+        case 2:
+          final rem = widget.remaining > 0 ? widget.remaining : 0.0;
+          final pct = (rem / total) * 100;
+          return PieChartSectionData(
+            color: Colors.orange,
+            value: rem,
+            title: '${pct.toStringAsFixed(1)}%',
+            radius: radius,
+            titleStyle: TextStyle(
+                fontSize: fontSize,
+                fontWeight: FontWeight.bold,
+                color: Colors.white),
+          );
+        default:
+          throw Error();
+      }
+    });
+  }
+
+  Widget _buildLegend(Color color, String label, double amount) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          Container(width: 16, height: 16, color: color),
+          const SizedBox(width: 8),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w500)),
+          const Spacer(),
+          Text('${amount.toStringAsFixed(2)} บาท'),
+        ],
+      ),
+    );
   }
 }
